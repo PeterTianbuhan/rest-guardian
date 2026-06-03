@@ -22,7 +22,7 @@ private struct GuardianStoredSettings: Codable {
 
     var normalized: GuardianStoredSettings {
         let work = min(Self.hardMaxWorkMinutes, max(1, workMinutes))
-        let rest = min(120, max(1, restMinutes))
+        let rest = min(120, max(5, restMinutes))
         let maxWork = min(Self.hardMaxWorkMinutes, max(work, maxWorkMinutes))
         return GuardianStoredSettings(workMinutes: work, restMinutes: rest, maxWorkMinutes: maxWork)
     }
@@ -221,7 +221,6 @@ private func clampedTimerWindowFrame(_ frame: NSRect, fallback: NSRect) -> NSRec
 }
 
 private final class RestGuardianApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
-    private static let protectedRestSeconds = 5 * 60
     private static let pauseRecoveryMultiplier = 5
     private static let timerWindowXKey = "timerWindowX"
     private static let timerWindowYKey = "timerWindowY"
@@ -266,6 +265,10 @@ private final class RestGuardianApp: NSObject, NSApplicationDelegate, NSWindowDe
     private var maxWorkMinutesField: NSTextField?
     private var reminderWindow: NSPanel?
     private var reminderHideTimer: Timer?
+
+    private var minimumRestSeconds: Int {
+        config.restSeconds
+    }
     private var workReminderIndex = 0
     private var restSuggestionIndex = 0
 
@@ -465,14 +468,14 @@ private final class RestGuardianApp: NSObject, NSApplicationDelegate, NSWindowDe
         restElapsedSeconds = 0
         continuousWorkSeconds = 0
         mode = .rest
-        remainingSeconds = config.restSeconds
-        sessionTotalSeconds = config.restSeconds
+        remainingSeconds = 0
+        sessionTotalSeconds = 0
         showRestWindow()
         startTicker()
         updateTimerWindow()
         log("rest_started", details: [
             "reason": reason,
-            "seconds": "\(config.restSeconds)",
+            "minimumRestSeconds": "\(minimumRestSeconds)",
             "previousContinuousWorkSeconds": "\(previousContinuousWorkSeconds)"
         ])
     }
@@ -501,20 +504,26 @@ private final class RestGuardianApp: NSObject, NSApplicationDelegate, NSWindowDe
             continuousWorkSeconds = min(config.maxWorkSeconds, continuousWorkSeconds + 1)
         }
 
-        remainingSeconds = max(0, remainingSeconds - 1)
         if mode == .rest {
             restElapsedSeconds += 1
+            sessionTotalSeconds = restElapsedSeconds
+
+            if manualRestUndoSeconds > 0 {
+                manualRestUndoSeconds -= 1
+                updateManualRestUndoButton()
+            }
+            if restElapsedSeconds > 0 && restElapsedSeconds % 6 == 0 {
+                updateRestSuggestion(advance: true)
+            }
+
+            updateTimerWindow()
+            restCountdownLabel?.stringValue = formatTime(restElapsedSeconds)
+            updateReturnToWorkButton()
+            return
         }
-        if mode == .rest && manualRestUndoSeconds > 0 {
-            manualRestUndoSeconds -= 1
-            updateManualRestUndoButton()
-        }
-        if mode == .rest && remainingSeconds > 0 && remainingSeconds % 6 == 0 {
-            updateRestSuggestion(advance: true)
-        }
+
+        remainingSeconds = max(0, remainingSeconds - 1)
         updateTimerWindow()
-        restCountdownLabel?.stringValue = formatTime(remainingSeconds)
-        updateReturnToWorkButton()
 
         if mode == .work && continuousWorkSeconds >= config.maxWorkSeconds {
             timer?.invalidate()
@@ -540,8 +549,7 @@ private final class RestGuardianApp: NSObject, NSApplicationDelegate, NSWindowDe
             ])
             startRest(reason: "work_timer_finished")
         case .rest:
-            log("rest_completed", details: ["seconds": "\(sessionTotalSeconds)"])
-            startWork(seconds: config.workSeconds, reason: "rest_completed")
+            break
         case .pause:
             break
         }
@@ -559,7 +567,7 @@ private final class RestGuardianApp: NSObject, NSApplicationDelegate, NSWindowDe
             modeLabel.stringValue = "暂停"
             modeLabel.textColor = NSColor.systemYellow
         }
-        countdownLabel.stringValue = formatTime(remainingSeconds)
+        countdownLabel.stringValue = formatTime(mode == .rest ? restElapsedSeconds : remainingSeconds)
         addOneMinuteButton?.isEnabled = mode == .work && workExtensionHeadroom >= 60
     }
 
@@ -571,7 +579,7 @@ private final class RestGuardianApp: NSObject, NSApplicationDelegate, NSWindowDe
 
         let isPause = mode == .pause
         let title = label(isPause ? "暂停中" : "休息中", size: 32, weight: .bold, color: .white)
-        restCountdownLabel = label(formatTime(remainingSeconds), size: 54, weight: .bold, color: isPause ? NSColor.systemYellow : NSColor.systemGreen)
+        restCountdownLabel = label(formatTime(isPause ? remainingSeconds : restElapsedSeconds), size: 54, weight: .bold, color: isPause ? NSColor.systemYellow : NSColor.systemGreen)
         restCountdownLabel?.monospacedDigit()
         restSuggestionLabel = label("", size: 16, weight: .semibold, color: NSColor.systemCyan)
         restSuggestionLabel?.maximumNumberOfLines = 0
@@ -592,7 +600,6 @@ private final class RestGuardianApp: NSObject, NSApplicationDelegate, NSWindowDe
         if isPause {
             stack.addArrangedSubview(largeButton("回到工作", action: #selector(returnFromPause)))
         } else {
-            stack.addArrangedSubview(largeButton("没休息够？再来五分钟！", action: #selector(extendRestFiveMinutes)))
             stack.addArrangedSubview(returnToWorkButton!)
             if manualRestUndoSeconds > 0 {
                 manualRestUndoButton = smallQuietButton("", action: #selector(undoManualRest))
@@ -738,29 +745,13 @@ private final class RestGuardianApp: NSObject, NSApplicationDelegate, NSWindowDe
         startWork(seconds: restoredRemainingSeconds, reason: "manual_rest_undo")
     }
 
-    @objc private func extendRestFiveMinutes() {
-        guard mode == .rest else {
-            return
-        }
-
-        remainingSeconds += 5 * 60
-        sessionTotalSeconds += 5 * 60
-        restCountdownLabel?.stringValue = formatTime(remainingSeconds)
-        updateRestSuggestion(advance: true)
-        updateReturnToWorkButton()
-        log("rest_extended_five_minutes", details: [
-            "remainingSeconds": "\(remainingSeconds)",
-            "restElapsedSeconds": "\(restElapsedSeconds)"
-        ])
-    }
-
     @objc private func returnToWorkAfterEnoughRest() {
-        guard mode == .rest, restElapsedSeconds >= Self.protectedRestSeconds else {
+        guard mode == .rest, restElapsedSeconds >= minimumRestSeconds else {
             return
         }
 
         log("rest_return_to_work_after_enough_rest", details: [
-            "remainingSeconds": "\(remainingSeconds)",
+            "minimumRestSeconds": "\(minimumRestSeconds)",
             "restElapsedSeconds": "\(restElapsedSeconds)"
         ])
         startWork(seconds: config.workSeconds, reason: "rest_return_to_work")
@@ -822,7 +813,7 @@ private final class RestGuardianApp: NSObject, NSApplicationDelegate, NSWindowDe
 
         let title = label("休息监督设置", size: 22, weight: .bold, color: .labelColor)
         title.alignment = .left
-        let subtitle = label("保存只影响后续计时，不会重置当前工作轮。连续工作上限最高固定为 50 分钟，且不能小于下一轮工作时间。", size: 13, weight: .regular, color: .secondaryLabelColor)
+        let subtitle = label("保存只影响后续计时，不会重置当前工作轮。最短休息不能少于 5 分钟；连续工作上限最高固定为 50 分钟，且不能小于下一轮工作时间。", size: 13, weight: .regular, color: .secondaryLabelColor)
         subtitle.alignment = .left
         subtitle.maximumNumberOfLines = 0
 
@@ -833,7 +824,7 @@ private final class RestGuardianApp: NSObject, NSApplicationDelegate, NSWindowDe
         stack.addArrangedSubview(title)
         stack.addArrangedSubview(subtitle)
         stack.addArrangedSubview(settingsRow(title: "下一轮工作", field: workMinutesField!))
-        stack.addArrangedSubview(settingsRow(title: "每轮休息", field: restMinutesField!))
+        stack.addArrangedSubview(settingsRow(title: "最短休息", field: restMinutesField!))
         stack.addArrangedSubview(settingsRow(title: "连续工作上限", field: maxWorkMinutesField!))
 
         let buttonRow = NSStackView()
@@ -875,6 +866,11 @@ private final class RestGuardianApp: NSObject, NSApplicationDelegate, NSWindowDe
         guard work <= GuardianStoredSettings.hardMaxWorkMinutes,
               maxWork <= GuardianStoredSettings.hardMaxWorkMinutes else {
             showSettingsAlert("工作时间和连续工作上限都不能超过 50 分钟。")
+            return
+        }
+
+        guard rest >= 5 else {
+            showSettingsAlert("最短休息不能少于 5 分钟。")
             return
         }
 
@@ -1128,7 +1124,7 @@ private final class RestGuardianApp: NSObject, NSApplicationDelegate, NSWindowDe
             return
         }
 
-        let remainingProtectedSeconds = max(0, Self.protectedRestSeconds - restElapsedSeconds)
+        let remainingProtectedSeconds = max(0, minimumRestSeconds - restElapsedSeconds)
         if remainingProtectedSeconds == 0 {
             button.isHidden = false
             button.isEnabled = true
