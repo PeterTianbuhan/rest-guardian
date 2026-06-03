@@ -1,3 +1,7 @@
+param(
+    [switch]$SmokeTest
+)
+
 Add-Type -AssemblyName PresentationFramework
 Add-Type -AssemblyName PresentationCore
 Add-Type -AssemblyName WindowsBase
@@ -35,6 +39,9 @@ $script:RestSuggestionLabel = $null
 $script:ReturnToWorkButton = $null
 $script:ManualRestUndoButton = $null
 $script:SettingsWindow = $null
+$script:WorkMinutesBox = $null
+$script:RestMinutesBox = $null
+$script:MaxWorkMinutesBox = $null
 $script:ReminderWindow = $null
 $script:ReminderTimer = $null
 $script:WorkReminderIndex = 0
@@ -783,16 +790,19 @@ function Show-SettingsWindow {
     $title.Margin = "0,0,0,8"
     $root.Children.Add($title) | Out-Null
 
-    $subtitle = New-Label "保存只影响后续计时，不会重置当前工作轮。连续工作上限最高固定为 50 分钟，且不能小于每轮工作时间。" 13 "Normal" (New-ColorBrush 255 80 80 80)
+    $subtitle = New-Label "保存只影响后续计时，不会重置当前工作轮。连续工作上限最高固定为 50 分钟，且不能小于下一轮工作时间。" 13 "Normal" (New-ColorBrush 255 80 80 80)
     $subtitle.TextWrapping = "Wrap"
     $subtitle.TextAlignment = "Left"
     $subtitle.HorizontalAlignment = "Left"
     $subtitle.Margin = "0,0,0,16"
     $root.Children.Add($subtitle) | Out-Null
 
-    $workRow = New-SettingsRow "每轮工作" "$($script:Settings.WorkMinutes)"
+    $workRow = New-SettingsRow "下一轮工作" "$($script:Settings.WorkMinutes)"
     $restRow = New-SettingsRow "每轮休息" "$($script:Settings.RestMinutes)"
     $maxRow = New-SettingsRow "连续工作上限" "$($script:Settings.MaxWorkMinutes)"
+    $script:WorkMinutesBox = $workRow.Box
+    $script:RestMinutesBox = $restRow.Box
+    $script:MaxWorkMinutesBox = $maxRow.Box
     $root.Children.Add($workRow.Row) | Out-Null
     $root.Children.Add($restRow.Row) | Out-Null
     $root.Children.Add($maxRow.Row) | Out-Null
@@ -803,12 +813,17 @@ function Show-SettingsWindow {
     $buttons.Margin = "0,14,0,0"
     $buttons.Children.Add((New-Button "取消" { Close-SettingsWindow } 14)) | Out-Null
     $buttons.Children.Add((New-Button "保存" {
-        Save-SettingsFromWindow $workRow.Box $restRow.Box $maxRow.Box
+        Save-SettingsFromWindow $script:WorkMinutesBox $script:RestMinutesBox $script:MaxWorkMinutesBox
     } 14)) | Out-Null
     $root.Children.Add($buttons) | Out-Null
 
     $window.Content = $root
-    $window.Add_Closed({ $script:SettingsWindow = $null })
+    $window.Add_Closed({
+        $script:SettingsWindow = $null
+        $script:WorkMinutesBox = $null
+        $script:RestMinutesBox = $null
+        $script:MaxWorkMinutesBox = $null
+    })
     $script:SettingsWindow = $window
     $window.Show()
     Write-GuardianLog "settings_opened"
@@ -819,6 +834,9 @@ function Close-SettingsWindow {
         $script:SettingsWindow.Close()
         $script:SettingsWindow = $null
     }
+    $script:WorkMinutesBox = $null
+    $script:RestMinutesBox = $null
+    $script:MaxWorkMinutesBox = $null
 }
 
 function Show-SettingsAlert {
@@ -831,6 +849,34 @@ function Show-SettingsAlert {
     ) | Out-Null
 }
 
+function Apply-SettingsToCurrentSession {
+    if ($script:Mode -ne "work" -and $script:Mode -ne "pause") {
+        return $false
+    }
+
+    $maxWorkSeconds = Get-MaxWorkSeconds
+    if ($script:ContinuousWorkSeconds -ge $maxWorkSeconds) {
+        Write-GuardianLog "settings_applied_max_reached" @{ maxWorkSeconds = "$maxWorkSeconds" }
+        Start-Rest "settings_saved_max_reached"
+        return $true
+    }
+
+    $allowedRemaining = [Math]::Max(0, $maxWorkSeconds - $script:ContinuousWorkSeconds)
+    if ($script:RemainingSeconds -gt $allowedRemaining) {
+        $previousRemaining = $script:RemainingSeconds
+        $script:RemainingSeconds = $allowedRemaining
+        $script:SessionTotalSeconds = [Math]::Min($script:SessionTotalSeconds, $script:ContinuousWorkSeconds + $allowedRemaining)
+        Write-GuardianLog "settings_trimmed_current_session" @{
+            previousRemainingSeconds = "$previousRemaining"
+            remainingSeconds = "$script:RemainingSeconds"
+            continuousWorkSeconds = "$script:ContinuousWorkSeconds"
+            maxWorkSeconds = "$maxWorkSeconds"
+        }
+    }
+
+    return $false
+}
+
 function Save-SettingsFromWindow {
     param($WorkBox, $RestBox, $MaxBox)
     $work = Read-Minutes $WorkBox
@@ -841,11 +887,11 @@ function Save-SettingsFromWindow {
         return
     }
     if ($work -gt $script:HardMaxWorkMinutes -or $maxWork -gt $script:HardMaxWorkMinutes) {
-        Show-SettingsAlert "工作时间和连续工作上限都不能超过 50 分钟。"
+        Show-SettingsAlert "下一轮工作时间和连续工作上限都不能超过 50 分钟。"
         return
     }
     if ($maxWork -lt $work) {
-        Show-SettingsAlert "连续工作上限不能小于每轮工作时间。"
+        Show-SettingsAlert "连续工作上限不能小于下一轮工作时间。"
         return
     }
     $settings = Normalize-Settings -WorkMinutes $work -RestMinutes $rest -MaxWorkMinutes $maxWork
@@ -860,11 +906,11 @@ function Save-SettingsFromWindow {
         remainingSeconds = "$script:RemainingSeconds"
         continuousWorkSeconds = "$script:ContinuousWorkSeconds"
     }
+    $enteredRest = Apply-SettingsToCurrentSession
     Update-TimerWindow
     Update-ReturnToWorkButton
-    if ($script:Mode -eq "work" -and $script:ContinuousWorkSeconds -ge (Get-MaxWorkSeconds)) {
-        Write-GuardianLog "settings_saved_max_reached" @{ maxWorkSeconds = "$(Get-MaxWorkSeconds)" }
-        Start-Rest "settings_saved_max_reached"
+    if ($enteredRest) {
+        return
     }
 }
 
@@ -876,6 +922,47 @@ function Close-App {
     if ($script:ReminderWindow) { $script:ReminderWindow.Close() }
     if ($script:TimerWindow) { $script:TimerWindow.Close() }
     [System.Windows.Application]::Current.Shutdown()
+}
+
+function Invoke-SmokeTest {
+    $script:Settings = Load-Settings
+    $normalized = Normalize-Settings -WorkMinutes 90 -RestMinutes 1 -MaxWorkMinutes 10
+    if ($normalized.WorkMinutes -ne 50 -or $normalized.RestMinutes -ne 5 -or $normalized.MaxWorkMinutes -ne 50) {
+        throw "Normalize-Settings smoke test failed."
+    }
+    if ((Format-Time 65) -ne "01:05") {
+        throw "Format-Time smoke test failed."
+    }
+    $workBox = New-Object System.Windows.Controls.TextBox
+    $restBox = New-Object System.Windows.Controls.TextBox
+    $maxBox = New-Object System.Windows.Controls.TextBox
+    $workBox.Text = "2"
+    $restBox.Text = "5"
+    $maxBox.Text = "3"
+    Save-SettingsFromWindow $workBox $restBox $maxBox
+    if ($script:Settings.WorkMinutes -ne 2 -or $script:Settings.RestMinutes -ne 5 -or $script:Settings.MaxWorkMinutes -ne 3) {
+        throw "Save-SettingsFromWindow smoke test failed."
+    }
+    $script:Mode = "work"
+    $script:RemainingSeconds = 300
+    $script:SessionTotalSeconds = 390
+    $script:ContinuousWorkSeconds = 90
+    $maxBox.Text = "2"
+    Save-SettingsFromWindow $workBox $restBox $maxBox
+    if ($script:Mode -ne "work" -or $script:RemainingSeconds -ne 30) {
+        throw "Apply-SettingsToCurrentSession smoke test failed."
+    }
+    Write-GuardianLog "smoke_test" @{
+        workMinutes = "$($script:Settings.WorkMinutes)"
+        restMinutes = "$($script:Settings.RestMinutes)"
+        maxWorkMinutes = "$($script:Settings.MaxWorkMinutes)"
+    }
+    Write-Output "Rest Guardian smoke test ok"
+}
+
+if ($SmokeTest) {
+    Invoke-SmokeTest
+    exit 0
 }
 
 $script:Settings = Load-Settings
