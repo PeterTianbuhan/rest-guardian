@@ -8,6 +8,8 @@
 
 ![工作倒计时](docs/screenshots/work-timer.png)
 
+![暂停恢复](docs/screenshots/pause-overlay.png)
+
 ![休息遮罩](docs/screenshots/rest-overlay.png)
 
 ## 使用
