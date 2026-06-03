@@ -123,9 +123,108 @@ private struct GuardianLogEvent: Codable {
     let details: [String: String]
 }
 
+private final class TimerDragHandleView: NSView {
+    weak var draggedWindow: NSWindow?
+    var onMoved: ((NSRect) -> Void)?
+
+    private var dragStartMouseLocation: NSPoint?
+    private var dragStartWindowOrigin: NSPoint?
+
+    override var intrinsicContentSize: NSSize {
+        NSSize(width: 12, height: 22)
+    }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        commonInit()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        commonInit()
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+
+        NSColor.white.withAlphaComponent(0.42).setFill()
+        let dotSize: CGFloat = 2.4
+        let xValues = [bounds.midX - 2.5, bounds.midX + 2.5]
+        let yValues = [bounds.midY - 5, bounds.midY, bounds.midY + 5]
+        for x in xValues {
+            for y in yValues {
+                NSBezierPath(ovalIn: NSRect(
+                    x: x - dotSize / 2,
+                    y: y - dotSize / 2,
+                    width: dotSize,
+                    height: dotSize
+                )).fill()
+            }
+        }
+    }
+
+    override func resetCursorRects() {
+        addCursorRect(bounds, cursor: .openHand)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        dragStartMouseLocation = NSEvent.mouseLocation
+        dragStartWindowOrigin = (draggedWindow ?? window)?.frame.origin
+        NSCursor.closedHand.set()
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard let targetWindow = draggedWindow ?? window,
+              let dragStartMouseLocation,
+              let dragStartWindowOrigin else {
+            return
+        }
+
+        let currentMouseLocation = NSEvent.mouseLocation
+        var frame = targetWindow.frame
+        frame.origin = NSPoint(
+            x: dragStartWindowOrigin.x + currentMouseLocation.x - dragStartMouseLocation.x,
+            y: dragStartWindowOrigin.y + currentMouseLocation.y - dragStartMouseLocation.y
+        )
+        let clampedFrame = clampedTimerWindowFrame(frame, fallback: targetWindow.frame)
+        targetWindow.setFrame(clampedFrame, display: true)
+        onMoved?(clampedFrame)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        if let frame = (draggedWindow ?? window)?.frame {
+            onMoved?(frame)
+        }
+        dragStartMouseLocation = nil
+        dragStartWindowOrigin = nil
+        NSCursor.openHand.set()
+    }
+
+    private func commonInit() {
+        toolTip = "拖动计时器"
+        setContentHuggingPriority(.required, for: .horizontal)
+        setContentCompressionResistancePriority(.required, for: .horizontal)
+    }
+}
+
+private func clampedTimerWindowFrame(_ frame: NSRect, fallback: NSRect) -> NSRect {
+    guard let visibleFrame = NSScreen.screens
+        .map(\.visibleFrame)
+        .first(where: { $0.intersects(frame) }) ?? NSScreen.main?.visibleFrame else {
+        return fallback
+    }
+
+    var clampedFrame = frame
+    clampedFrame.origin.x = min(max(clampedFrame.origin.x, visibleFrame.minX), visibleFrame.maxX - clampedFrame.width)
+    clampedFrame.origin.y = min(max(clampedFrame.origin.y, visibleFrame.minY), visibleFrame.maxY - clampedFrame.height)
+    return clampedFrame
+}
+
 private final class RestGuardianApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private static let protectedRestSeconds = 5 * 60
     private static let pauseRecoveryMultiplier = 5
+    private static let timerWindowXKey = "timerWindowX"
+    private static let timerWindowYKey = "timerWindowY"
 
     private var config = GuardianConfig.fromArguments()
     private let dateFormatter = ISO8601DateFormatter()
@@ -144,7 +243,12 @@ private final class RestGuardianApp: NSObject, NSApplicationDelegate, NSWindowDe
     private var timerWindow: NSPanel!
     private var modeLabel: NSTextField!
     private var countdownLabel: NSTextField!
+    private var dragHandleView: TimerDragHandleView!
     private var addOneMinuteButton: NSButton!
+    private var pauseButton: NSButton!
+    private var restButton: NSButton!
+    private var settingsButton: NSButton!
+    private var quitButton: NSButton!
     private var restWindow: NSWindow?
     private var restCountdownLabel: NSTextField?
     private var restSuggestionLabel: NSTextField?
@@ -220,7 +324,7 @@ private final class RestGuardianApp: NSObject, NSApplicationDelegate, NSWindowDe
     }
 
     private func buildTimerWindow() {
-        let width: CGFloat = 392
+        let width: CGFloat = 414
         let height: CGFloat = 38
         let frame = topWindowFrame(width: width, height: height)
 
@@ -256,15 +360,25 @@ private final class RestGuardianApp: NSObject, NSApplicationDelegate, NSWindowDe
         countdownLabel = label("25:00", size: 18, weight: .bold, color: .white)
         countdownLabel.monospacedDigit()
 
+        dragHandleView = TimerDragHandleView()
+        dragHandleView.draggedWindow = timerWindow
+        dragHandleView.onMoved = { [weak self] frame in
+            self?.saveTimerWindowFrame(frame)
+        }
+        stack.addArrangedSubview(dragHandleView)
         stack.addArrangedSubview(modeLabel)
         stack.addArrangedSubview(countdownLabel)
         stack.addArrangedSubview(spacer())
         addOneMinuteButton = smallButton("+1", action: #selector(addOneMinuteWork))
         stack.addArrangedSubview(addOneMinuteButton)
-        stack.addArrangedSubview(smallButton("暂停", action: #selector(pauseWork)))
-        stack.addArrangedSubview(smallButton("休息", action: #selector(startRestNow)))
-        stack.addArrangedSubview(smallButton("设置", action: #selector(showSettingsPanel)))
-        stack.addArrangedSubview(smallButton("×", action: #selector(quitApp)))
+        pauseButton = smallButton("暂停", action: #selector(pauseWork))
+        stack.addArrangedSubview(pauseButton)
+        restButton = smallButton("休息", action: #selector(startRestNow))
+        stack.addArrangedSubview(restButton)
+        settingsButton = smallButton("设置", action: #selector(showSettingsPanel))
+        stack.addArrangedSubview(settingsButton)
+        quitButton = smallButton("×", action: #selector(quitApp))
+        stack.addArrangedSubview(quitButton)
 
         shell.addSubview(stack)
         NSLayoutConstraint.activate([
@@ -280,12 +394,32 @@ private final class RestGuardianApp: NSObject, NSApplicationDelegate, NSWindowDe
 
     private func topWindowFrame(width: CGFloat, height: CGFloat) -> NSRect {
         let screenFrame = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1280, height: 800)
-        return NSRect(
+        let fallbackFrame = NSRect(
             x: screenFrame.midX - width / 2,
             y: screenFrame.maxY - height - 8,
             width: width,
             height: height
         )
+
+        let defaults = UserDefaults.standard
+        guard defaults.object(forKey: Self.timerWindowXKey) != nil,
+              defaults.object(forKey: Self.timerWindowYKey) != nil else {
+            return fallbackFrame
+        }
+
+        let savedFrame = NSRect(
+            x: defaults.double(forKey: Self.timerWindowXKey),
+            y: defaults.double(forKey: Self.timerWindowYKey),
+            width: width,
+            height: height
+        )
+        return clampedTimerWindowFrame(savedFrame, fallback: fallbackFrame)
+    }
+
+    private func saveTimerWindowFrame(_ frame: NSRect) {
+        let defaults = UserDefaults.standard
+        defaults.set(frame.origin.x, forKey: Self.timerWindowXKey)
+        defaults.set(frame.origin.y, forKey: Self.timerWindowYKey)
     }
 
     private func startWork(seconds: Int, reason: String) {

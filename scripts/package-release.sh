@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-VERSION="${1:-v0.1.1-alpha}"
+VERSION="${1:-v0.1.2-alpha}"
 APP_DIR="$ROOT_DIR/build/Rest Guardian.app"
 DIST_DIR="$ROOT_DIR/dist"
 ZIP_PATH="$DIST_DIR/RestGuardian-macOS-arm64-${VERSION}.zip"
