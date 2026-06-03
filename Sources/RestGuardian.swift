@@ -237,6 +237,7 @@ private final class RestGuardianApp: NSObject, NSApplicationDelegate, NSWindowDe
     private var pauseElapsedSeconds = 0
     private var pauseRecoveredSeconds = 0
     private var pauseReducedContinuousSeconds = 0
+    private var currentWorkBaseSeconds = 0
     private var manualWorkExtensionSeconds = 0
     private var timer: Timer?
 
@@ -257,6 +258,7 @@ private final class RestGuardianApp: NSObject, NSApplicationDelegate, NSWindowDe
     private var manualRestUndoSeconds = 0
     private var pausedWorkSecondsBeforeManualRest = 0
     private var pausedContinuousWorkSecondsBeforeManualRest = 0
+    private var pausedCurrentWorkBaseSecondsBeforeManualRest = 0
     private var pausedManualWorkExtensionSecondsBeforeManualRest = 0
     private var settingsWindow: NSWindow?
     private var workMinutesField: NSTextField?
@@ -423,10 +425,6 @@ private final class RestGuardianApp: NSObject, NSApplicationDelegate, NSWindowDe
     }
 
     private func startWork(seconds: Int, reason: String) {
-        if reason != "manual_rest_undo" {
-            manualWorkExtensionSeconds = 0
-        }
-
         let allowedSeconds = max(0, config.maxWorkSeconds - continuousWorkSeconds)
         guard allowedSeconds > 0 else {
             log("work_start_blocked_max_reached", details: ["reason": reason])
@@ -435,6 +433,11 @@ private final class RestGuardianApp: NSObject, NSApplicationDelegate, NSWindowDe
         }
 
         let actualSeconds = min(seconds, allowedSeconds)
+        if reason != "manual_rest_undo" {
+            currentWorkBaseSeconds = actualSeconds
+            manualWorkExtensionSeconds = 0
+        }
+
         closeRestWindow()
         mode = .work
         remainingSeconds = actualSeconds
@@ -445,7 +448,8 @@ private final class RestGuardianApp: NSObject, NSApplicationDelegate, NSWindowDe
             "reason": reason,
             "seconds": "\(actualSeconds)",
             "continuousWorkSeconds": "\(continuousWorkSeconds)",
-            "maxWorkSeconds": "\(config.maxWorkSeconds)"
+            "maxWorkSeconds": "\(config.maxWorkSeconds)",
+            "currentWorkBaseSeconds": "\(currentWorkBaseSeconds)"
         ])
     }
 
@@ -454,6 +458,7 @@ private final class RestGuardianApp: NSObject, NSApplicationDelegate, NSWindowDe
         let isManualRest = reason == "manual"
         pausedWorkSecondsBeforeManualRest = isManualRest ? remainingSeconds : 0
         pausedContinuousWorkSecondsBeforeManualRest = isManualRest ? previousContinuousWorkSeconds : 0
+        pausedCurrentWorkBaseSecondsBeforeManualRest = isManualRest ? currentWorkBaseSeconds : 0
         pausedManualWorkExtensionSecondsBeforeManualRest = isManualRest ? manualWorkExtensionSeconds : 0
         manualRestUndoSeconds = isManualRest ? 10 : 0
         restSuggestionIndex = 0
@@ -651,6 +656,7 @@ private final class RestGuardianApp: NSObject, NSApplicationDelegate, NSWindowDe
             manualRestUndoSeconds = 0
             pausedWorkSecondsBeforeManualRest = 0
             pausedContinuousWorkSecondsBeforeManualRest = 0
+            pausedCurrentWorkBaseSecondsBeforeManualRest = 0
             pausedManualWorkExtensionSecondsBeforeManualRest = 0
         }
         restElapsedSeconds = 0
@@ -713,16 +719,20 @@ private final class RestGuardianApp: NSObject, NSApplicationDelegate, NSWindowDe
         }
 
         let restoredRemainingSeconds = pausedWorkSecondsBeforeManualRest
+        let restoredCurrentWorkBaseSeconds = pausedCurrentWorkBaseSecondsBeforeManualRest
         let restoredManualWorkExtensionSeconds = pausedManualWorkExtensionSecondsBeforeManualRest
         continuousWorkSeconds = pausedContinuousWorkSecondsBeforeManualRest
+        currentWorkBaseSeconds = restoredCurrentWorkBaseSeconds
         manualWorkExtensionSeconds = restoredManualWorkExtensionSeconds
         pausedWorkSecondsBeforeManualRest = 0
         pausedContinuousWorkSecondsBeforeManualRest = 0
+        pausedCurrentWorkBaseSecondsBeforeManualRest = 0
         pausedManualWorkExtensionSecondsBeforeManualRest = 0
         manualRestUndoSeconds = 0
         log("manual_rest_undone", details: [
             "restoredRemainingSeconds": "\(restoredRemainingSeconds)",
             "restoredContinuousWorkSeconds": "\(continuousWorkSeconds)",
+            "restoredCurrentWorkBaseSeconds": "\(restoredCurrentWorkBaseSeconds)",
             "restoredManualWorkExtensionSeconds": "\(restoredManualWorkExtensionSeconds)"
         ])
         startWork(seconds: restoredRemainingSeconds, reason: "manual_rest_undo")
@@ -812,7 +822,7 @@ private final class RestGuardianApp: NSObject, NSApplicationDelegate, NSWindowDe
 
         let title = label("休息监督设置", size: 22, weight: .bold, color: .labelColor)
         title.alignment = .left
-        let subtitle = label("保存只影响后续计时，不会重置当前工作轮。连续工作上限最高固定为 50 分钟，且不能小于每轮工作时间。", size: 13, weight: .regular, color: .secondaryLabelColor)
+        let subtitle = label("保存只影响后续计时，不会重置当前工作轮。连续工作上限最高固定为 50 分钟，且不能小于下一轮工作时间。", size: 13, weight: .regular, color: .secondaryLabelColor)
         subtitle.alignment = .left
         subtitle.maximumNumberOfLines = 0
 
@@ -822,7 +832,7 @@ private final class RestGuardianApp: NSObject, NSApplicationDelegate, NSWindowDe
 
         stack.addArrangedSubview(title)
         stack.addArrangedSubview(subtitle)
-        stack.addArrangedSubview(settingsRow(title: "每轮工作", field: workMinutesField!))
+        stack.addArrangedSubview(settingsRow(title: "下一轮工作", field: workMinutesField!))
         stack.addArrangedSubview(settingsRow(title: "每轮休息", field: restMinutesField!))
         stack.addArrangedSubview(settingsRow(title: "连续工作上限", field: maxWorkMinutesField!))
 
@@ -869,7 +879,7 @@ private final class RestGuardianApp: NSObject, NSApplicationDelegate, NSWindowDe
         }
 
         guard maxWork >= work else {
-            showSettingsAlert("连续工作上限不能小于每轮工作时间。")
+            showSettingsAlert("连续工作上限不能小于下一轮工作时间。")
             return
         }
 
@@ -894,7 +904,9 @@ private final class RestGuardianApp: NSObject, NSApplicationDelegate, NSWindowDe
             "maxWorkMinutes": "\(settings.maxWorkMinutes)",
             "mode": mode.rawValue,
             "remainingSeconds": "\(remainingSeconds)",
-            "continuousWorkSeconds": "\(continuousWorkSeconds)"
+            "continuousWorkSeconds": "\(continuousWorkSeconds)",
+            "currentWorkBaseSeconds": "\(currentWorkBaseSeconds)",
+            "manualWorkExtensionLimitSeconds": "\(manualWorkExtensionLimit)"
         ])
         updateTimerWindow()
         updateReturnToWorkButton()
@@ -1057,6 +1069,7 @@ private final class RestGuardianApp: NSObject, NSApplicationDelegate, NSWindowDe
             button.isHidden = true
             pausedWorkSecondsBeforeManualRest = 0
             pausedContinuousWorkSecondsBeforeManualRest = 0
+            pausedCurrentWorkBaseSecondsBeforeManualRest = 0
             pausedManualWorkExtensionSecondsBeforeManualRest = 0
             log("manual_rest_undo_expired")
         }
@@ -1183,7 +1196,7 @@ private final class RestGuardianApp: NSObject, NSApplicationDelegate, NSWindowDe
     }
 
     private var manualWorkExtensionLimit: Int {
-        max(0, config.maxWorkSeconds - config.workSeconds)
+        max(0, config.maxWorkSeconds - currentWorkBaseSeconds)
     }
 
     private var manualWorkExtensionRemainingSeconds: Int {
