@@ -582,7 +582,7 @@ private final class RestGuardianApp: NSObject, NSApplicationDelegate, NSWindowDe
 
         let title = label("休息监督设置", size: 22, weight: .bold, color: .labelColor)
         title.alignment = .left
-        let subtitle = label("保存后会重启当前工作轮。连续工作上限最高固定为 50 分钟，且不能小于每轮工作时间。", size: 13, weight: .regular, color: .secondaryLabelColor)
+        let subtitle = label("保存只影响后续计时，不会重置当前工作轮。连续工作上限最高固定为 50 分钟，且不能小于每轮工作时间。", size: 13, weight: .regular, color: .secondaryLabelColor)
         subtitle.alignment = .left
         subtitle.maximumNumberOfLines = 0
 
@@ -603,7 +603,7 @@ private final class RestGuardianApp: NSObject, NSApplicationDelegate, NSWindowDe
         buttonRow.translatesAutoresizingMaskIntoConstraints = false
         buttonRow.addArrangedSubview(spacer())
         buttonRow.addArrangedSubview(largeButton("取消", action: #selector(closeSettingsPanel)))
-        buttonRow.addArrangedSubview(largeButton("保存并重启计时", action: #selector(saveSettingsAndRestart)))
+        buttonRow.addArrangedSubview(largeButton("保存", action: #selector(saveSettings)))
         stack.addArrangedSubview(buttonRow)
 
         root.addSubview(stack)
@@ -624,7 +624,7 @@ private final class RestGuardianApp: NSObject, NSApplicationDelegate, NSWindowDe
         maxWorkMinutesField = nil
     }
 
-    @objc private func saveSettingsAndRestart() {
+    @objc private func saveSettings() {
         guard let work = readMinutes(workMinutesField),
               let rest = readMinutes(restMinutesField),
               let maxWork = readMinutes(maxWorkMinutesField) else {
@@ -658,16 +658,21 @@ private final class RestGuardianApp: NSObject, NSApplicationDelegate, NSWindowDe
 
         config = GuardianConfig(settings: settings, logURL: config.logURL, settingsURL: config.settingsURL)
         closeSettingsPanel()
-        closeRestWindow()
-        continuousWorkSeconds = 0
-        pausedWorkSecondsBeforeManualRest = 0
-        pausedContinuousWorkSecondsBeforeManualRest = 0
         log("settings_saved", details: [
             "workMinutes": "\(settings.workMinutes)",
             "restMinutes": "\(settings.restMinutes)",
-            "maxWorkMinutes": "\(settings.maxWorkMinutes)"
+            "maxWorkMinutes": "\(settings.maxWorkMinutes)",
+            "mode": mode.rawValue,
+            "remainingSeconds": "\(remainingSeconds)",
+            "continuousWorkSeconds": "\(continuousWorkSeconds)"
         ])
-        startWork(seconds: config.workSeconds, reason: "settings_saved")
+        updateTimerWindow()
+        updateReturnToWorkButton()
+
+        if mode == .work && continuousWorkSeconds >= config.maxWorkSeconds {
+            log("settings_saved_max_reached", details: ["maxWorkSeconds": "\(config.maxWorkSeconds)"])
+            startRest(reason: "settings_saved_max_reached")
+        }
     }
 
     @objc private func quitApp() {
