@@ -20,6 +20,8 @@ macOS 打开 `Rest Guardian.app`。
 
 Windows 解压 Windows 试用版 zip 后，双击 `run.bat`。
 
+Android 从 GitHub Releases 下载 APK 后安装到手机。
+
 运行后，屏幕顶部会出现工作倒计时。
 
 拖动左侧六点把手可以移动顶部条位置，重启后会记住。
@@ -56,6 +58,8 @@ macOS 从 GitHub Releases 下载最新的 macOS zip，解压后打开 `Rest Guar
 
 Windows 从 GitHub Releases 下载 Windows 试用版 zip，解压后双击 `run.bat`。
 
+Android 版目前是 debug 测试版，见 `android/README.md`。
+
 首次打开 macOS 版本时，macOS 可能需要你右键选择 `打开`。
 
 ## macOS 从源码构建
@@ -74,6 +78,12 @@ windows\run.bat
 ```
 
 需要 Windows 自带 PowerShell。
+
+## Android 运行源码
+
+用 Android Studio 打开 `android/` 目录，连接 Android 手机后运行 `app`。
+
+首次运行需要允许悬浮窗权限和通知权限。
 
 ## 本地数据
 

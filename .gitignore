@@ -5,3 +5,5 @@ dist/
 *.jsonl
 rest-guardian-settings.json
 *.tmp
+.gradle/
+local.properties

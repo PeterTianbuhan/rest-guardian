@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">反向番茄钟</string>
+    <string name="notification_channel">反向番茄钟</string>
+</resources>

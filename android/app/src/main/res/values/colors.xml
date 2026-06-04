@@ -1,0 +1,6 @@
+<resources>
+    <color name="guardian_orange">#ff9f43</color>
+    <color name="guardian_green">#2ecc71</color>
+    <color name="guardian_cyan">#38d5d5</color>
+    <color name="guardian_panel">#cc171717</color>
+</resources>

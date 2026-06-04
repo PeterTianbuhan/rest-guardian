@@ -1,0 +1,16 @@
+plugins {
+    id "com.android.application"
+}
+
+android {
+    namespace "me.petertian.restguardian"
+    compileSdk 35
+
+    defaultConfig {
+        applicationId "me.petertian.restguardian"
+        minSdk 26
+        targetSdk 35
+        versionCode 3
+        versionName "0.1.2-alpha"
+    }
+}
