@@ -207,6 +207,75 @@ private final class TimerDragHandleView: NSView {
     }
 }
 
+private final class CompactTimerButton: NSButton {
+    weak var draggedWindow: NSWindow?
+    var onMoved: ((NSRect) -> Void)?
+    var onDoubleClick: (() -> Void)?
+
+    private var dragStartMouseLocation: NSPoint?
+    private var dragStartWindowOrigin: NSPoint?
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        commonInit()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        commonInit()
+    }
+
+    override func resetCursorRects() {
+        addCursorRect(bounds, cursor: .openHand)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        if event.clickCount >= 2 {
+            onDoubleClick?()
+            return
+        }
+
+        dragStartMouseLocation = NSEvent.mouseLocation
+        dragStartWindowOrigin = (draggedWindow ?? window)?.frame.origin
+        NSCursor.closedHand.set()
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard let targetWindow = draggedWindow ?? window,
+              let dragStartMouseLocation,
+              let dragStartWindowOrigin else {
+            return
+        }
+
+        let currentMouseLocation = NSEvent.mouseLocation
+        var frame = targetWindow.frame
+        frame.origin = NSPoint(
+            x: dragStartWindowOrigin.x + currentMouseLocation.x - dragStartMouseLocation.x,
+            y: dragStartWindowOrigin.y + currentMouseLocation.y - dragStartMouseLocation.y
+        )
+        let clampedFrame = clampedTimerWindowFrame(frame, fallback: targetWindow.frame)
+        targetWindow.setFrame(clampedFrame, display: true)
+        onMoved?(clampedFrame)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        if let frame = (draggedWindow ?? window)?.frame {
+            onMoved?(frame)
+        }
+        dragStartMouseLocation = nil
+        dragStartWindowOrigin = nil
+        NSCursor.openHand.set()
+    }
+
+    private func commonInit() {
+        isBordered = false
+        focusRingType = .none
+        font = NSFont.monospacedDigitSystemFont(ofSize: 17, weight: .bold)
+        contentTintColor = .white
+        toolTip = "拖动移动，双击展开"
+    }
+}
+
 private func clampedTimerWindowFrame(_ frame: NSRect, fallback: NSRect) -> NSRect {
     guard let visibleFrame = NSScreen.screens
         .map(\.visibleFrame)
@@ -224,6 +293,9 @@ private final class RestGuardianApp: NSObject, NSApplicationDelegate, NSWindowDe
     private static let pauseRecoveryMultiplier = 5
     private static let timerWindowXKey = "timerWindowX"
     private static let timerWindowYKey = "timerWindowY"
+    private static let timerWindowCompactKey = "timerWindowCompact"
+    private static let expandedTimerSize = NSSize(width: 468, height: 38)
+    private static let compactTimerSize = NSSize(width: 112, height: 38)
 
     private var config = GuardianConfig.fromArguments()
     private let dateFormatter = ISO8601DateFormatter()
@@ -239,16 +311,19 @@ private final class RestGuardianApp: NSObject, NSApplicationDelegate, NSWindowDe
     private var currentWorkBaseSeconds = 0
     private var manualWorkExtensionSeconds = 0
     private var timer: Timer?
+    private var isTimerCompact = false
 
     private var timerWindow: NSPanel!
-    private var modeLabel: NSTextField!
-    private var countdownLabel: NSTextField!
+    private var modeLabel: NSTextField?
+    private var countdownLabel: NSTextField?
+    private var compactTimerButton: CompactTimerButton?
     private var dragHandleView: TimerDragHandleView!
-    private var addOneMinuteButton: NSButton!
-    private var pauseButton: NSButton!
-    private var restButton: NSButton!
-    private var settingsButton: NSButton!
-    private var quitButton: NSButton!
+    private var addOneMinuteButton: NSButton?
+    private var pauseButton: NSButton?
+    private var restButton: NSButton?
+    private var settingsButton: NSButton?
+    private var collapseButton: NSButton?
+    private var quitButton: NSButton?
     private var restWindow: NSWindow?
     private var restCountdownLabel: NSTextField?
     private var restSuggestionLabel: NSTextField?
@@ -329,9 +404,9 @@ private final class RestGuardianApp: NSObject, NSApplicationDelegate, NSWindowDe
     }
 
     private func buildTimerWindow() {
-        let width: CGFloat = 414
-        let height: CGFloat = 38
-        let frame = topWindowFrame(width: width, height: height)
+        isTimerCompact = UserDefaults.standard.bool(forKey: Self.timerWindowCompactKey)
+        let size = isTimerCompact ? Self.compactTimerSize : Self.expandedTimerSize
+        let frame = topWindowFrame(width: size.width, height: size.height)
 
         timerWindow = NSPanel(
             contentRect: frame,
@@ -347,12 +422,31 @@ private final class RestGuardianApp: NSObject, NSApplicationDelegate, NSWindowDe
         timerWindow.isOpaque = false
         timerWindow.hasShadow = true
 
+        renderTimerWindowContent()
+        timerWindow.orderFrontRegardless()
+    }
+
+    private func renderTimerWindowContent() {
+        if isTimerCompact {
+            renderCompactTimerContent()
+        } else {
+            renderExpandedTimerContent()
+        }
+    }
+
+    private func timerShell(cornerRadius: CGFloat) -> NSVisualEffectView {
         let shell = NSVisualEffectView()
         shell.material = .hudWindow
         shell.blendingMode = .behindWindow
         shell.state = .active
         shell.wantsLayer = true
-        shell.layer?.cornerRadius = 18
+        shell.layer?.cornerRadius = cornerRadius
+        return shell
+    }
+
+    private func renderExpandedTimerContent() {
+        compactTimerButton = nil
+        let shell = timerShell(cornerRadius: 18)
 
         let stack = NSStackView()
         stack.orientation = .horizontal
@@ -363,7 +457,7 @@ private final class RestGuardianApp: NSObject, NSApplicationDelegate, NSWindowDe
 
         modeLabel = label("工作", size: 12, weight: .semibold, color: NSColor.systemOrange)
         countdownLabel = label("25:00", size: 18, weight: .bold, color: .white)
-        countdownLabel.monospacedDigit()
+        countdownLabel?.monospacedDigit()
 
         dragHandleView = TimerDragHandleView()
         dragHandleView.draggedWindow = timerWindow
@@ -371,19 +465,21 @@ private final class RestGuardianApp: NSObject, NSApplicationDelegate, NSWindowDe
             self?.saveTimerWindowFrame(frame)
         }
         stack.addArrangedSubview(dragHandleView)
-        stack.addArrangedSubview(modeLabel)
-        stack.addArrangedSubview(countdownLabel)
+        stack.addArrangedSubview(modeLabel!)
+        stack.addArrangedSubview(countdownLabel!)
         stack.addArrangedSubview(spacer())
         addOneMinuteButton = smallButton("+1", action: #selector(addOneMinuteWork))
-        stack.addArrangedSubview(addOneMinuteButton)
+        stack.addArrangedSubview(addOneMinuteButton!)
         pauseButton = smallButton("暂停", action: #selector(pauseWork))
-        stack.addArrangedSubview(pauseButton)
+        stack.addArrangedSubview(pauseButton!)
         restButton = smallButton("休息", action: #selector(startRestNow))
-        stack.addArrangedSubview(restButton)
+        stack.addArrangedSubview(restButton!)
         settingsButton = smallButton("设置", action: #selector(showSettingsPanel))
-        stack.addArrangedSubview(settingsButton)
+        stack.addArrangedSubview(settingsButton!)
+        collapseButton = smallButton("收起", action: #selector(collapseTimerWindow))
+        stack.addArrangedSubview(collapseButton!)
         quitButton = smallButton("×", action: #selector(quitApp))
-        stack.addArrangedSubview(quitButton)
+        stack.addArrangedSubview(quitButton!)
 
         shell.addSubview(stack)
         NSLayoutConstraint.activate([
@@ -394,7 +490,75 @@ private final class RestGuardianApp: NSObject, NSApplicationDelegate, NSWindowDe
         ])
 
         timerWindow.contentView = shell
-        timerWindow.orderFrontRegardless()
+    }
+
+    private func renderCompactTimerContent() {
+        modeLabel = nil
+        addOneMinuteButton = nil
+        pauseButton = nil
+        restButton = nil
+        settingsButton = nil
+        collapseButton = nil
+        quitButton = nil
+        countdownLabel = nil
+
+        let shell = timerShell(cornerRadius: Self.compactTimerSize.height / 2)
+        shell.toolTip = "拖动移动，双击展开"
+        compactTimerButton = CompactTimerButton(title: "25:00", target: nil, action: nil)
+        compactTimerButton?.draggedWindow = timerWindow
+        compactTimerButton?.onMoved = { [weak self] frame in
+            self?.saveTimerWindowFrame(frame)
+        }
+        compactTimerButton?.onDoubleClick = { [weak self] in
+            self?.expandTimerWindow()
+        }
+        compactTimerButton?.translatesAutoresizingMaskIntoConstraints = false
+
+        shell.addSubview(compactTimerButton!)
+        NSLayoutConstraint.activate([
+            compactTimerButton!.leadingAnchor.constraint(equalTo: shell.leadingAnchor),
+            compactTimerButton!.trailingAnchor.constraint(equalTo: shell.trailingAnchor),
+            compactTimerButton!.topAnchor.constraint(equalTo: shell.topAnchor),
+            compactTimerButton!.bottomAnchor.constraint(equalTo: shell.bottomAnchor)
+        ])
+
+        timerWindow.contentView = shell
+    }
+
+    @objc private func collapseTimerWindow() {
+        setTimerCompact(true)
+    }
+
+    @objc private func expandTimerWindow() {
+        setTimerCompact(false)
+    }
+
+    private func setTimerCompact(_ compact: Bool) {
+        guard isTimerCompact != compact else {
+            return
+        }
+
+        isTimerCompact = compact
+        UserDefaults.standard.set(compact, forKey: Self.timerWindowCompactKey)
+        renderTimerWindowContent()
+        resizeTimerWindowForCurrentMode()
+        updateTimerWindow()
+        log("timer_compact_changed", details: ["compact": compact ? "true" : "false"])
+    }
+
+    private func resizeTimerWindowForCurrentMode() {
+        let size = isTimerCompact ? Self.compactTimerSize : Self.expandedTimerSize
+        let currentFrame = timerWindow.frame
+        let targetFrame = NSRect(
+            x: currentFrame.origin.x,
+            y: currentFrame.origin.y,
+            width: size.width,
+            height: size.height
+        )
+        let fallbackFrame = topWindowFrame(width: size.width, height: size.height)
+        let clampedFrame = clampedTimerWindowFrame(targetFrame, fallback: fallbackFrame)
+        timerWindow.setFrame(clampedFrame, display: true, animate: false)
+        saveTimerWindowFrame(clampedFrame)
     }
 
     private func topWindowFrame(width: CGFloat, height: CGFloat) -> NSRect {
@@ -558,16 +722,18 @@ private final class RestGuardianApp: NSObject, NSApplicationDelegate, NSWindowDe
     private func updateTimerWindow() {
         switch mode {
         case .work:
-            modeLabel.stringValue = "工作"
-            modeLabel.textColor = NSColor.systemOrange
+            modeLabel?.stringValue = "工作"
+            modeLabel?.textColor = NSColor.systemOrange
         case .rest:
-            modeLabel.stringValue = "休息"
-            modeLabel.textColor = NSColor.systemGreen
+            modeLabel?.stringValue = "休息"
+            modeLabel?.textColor = NSColor.systemGreen
         case .pause:
-            modeLabel.stringValue = "暂停"
-            modeLabel.textColor = NSColor.systemYellow
+            modeLabel?.stringValue = "暂停"
+            modeLabel?.textColor = NSColor.systemYellow
         }
-        countdownLabel.stringValue = formatTime(mode == .rest ? restElapsedSeconds : remainingSeconds)
+        let displayedTime = formatTime(mode == .rest ? restElapsedSeconds : remainingSeconds)
+        countdownLabel?.stringValue = displayedTime
+        compactTimerButton?.title = displayedTime
         addOneMinuteButton?.isEnabled = mode == .work && workExtensionHeadroom >= 60
     }
 
